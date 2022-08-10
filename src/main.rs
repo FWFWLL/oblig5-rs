@@ -1,9 +1,12 @@
+use serde::Deserialize;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs::File;
-use serde::Deserialize;
+use std::sync::Mutex;
+use std::thread;
 
 const SUB_LENGTH: usize = 3;
-const DATA_PATH: &str = "data/test_data";
+const DATA_PATH: &str = "data/real_data";
 
 #[derive(Deserialize, Debug)]
 struct Repertoire {
@@ -13,94 +16,67 @@ struct Repertoire {
 
 fn main() {
 	// Vectors containing all immune repertoires
-	let mut infected_immune_repertoires: Vec<HashMap<String, i32>> = Vec::new();
-	let mut healthy_immune_repertoires: Vec<HashMap<String, i32>> = Vec::new();
+	let infected_immune_repertoires: Mutex<Vec<HashMap<String, i32>>> = Mutex::new(Vec::new());
+	let healthy_immune_repertoires: Mutex<Vec<HashMap<String, i32>>> = Mutex::new(Vec::new());
 
 	// HashMaps containing all subsequences and in how many repertoires they occur in
 	let mut infected_subsequence_counts: HashMap<String, i32> = HashMap::new();
 	let mut healthy_subsequence_counts: HashMap<String, i32> = HashMap::new();
 
-	// Just to make it look nice
-	let address_infected = &format!("{:p}", &infected_immune_repertoires)[8..];
-	let address_healthy = &format!("{:p}", &healthy_immune_repertoires)[8..];
+	// Get repertoires from metadata.csv
+	let repertoires: Vec<Repertoire> = csv::Reader::from_reader(File::open(format!("{DATA_PATH}/metadata.csv")).unwrap()).records().map(|rec| {
+		rec.unwrap().deserialize(None).unwrap()
+	}).collect();
 
-	// Open metadata.csv
-	let meta_path = format!("{DATA_PATH}/metadata.csv");
-	let meta_file = File::open(meta_path)
-		.expect("Failed to open file...");
+	// Using rayon, iterate over every repertoire and store the results in our Vector of HashMaps
+	let _: Vec<()> = repertoires.par_iter().map(|rep| {
+		println!("{:>2?} - Receiving file {}", thread::current().id(), rep.filename);
 
-	// Read records in metadata.csv
-	let mut meta_reader = csv::Reader::from_reader(meta_file);
-	for result in meta_reader.records() {
-		let record = result
-			.expect("Expected a valid CSV record...");
+		let sequences: Vec<String> = csv::Reader::from_reader(File::open(format!("{DATA_PATH}/{}", rep.filename)).unwrap()).records().map(|rec| {
+			rec.unwrap().deserialize::<String>(None).unwrap()
+		}).collect();
 
-		let repertoire: Repertoire = record
-			.deserialize(None)
-			.expect("Could not deserialize CSV record...");
+		let temp: Mutex<HashMap<String, i32>> = Mutex::new(HashMap::new());
 
-		let rep_path = format!("{DATA_PATH}/{}", repertoire.filename);
-		let rep_file = File::open(rep_path)
-			.expect("Failed to open file...");
-
-		let mut temp: HashMap<String, i32> = HashMap::new();
-
-		println!("Reading file {}...", repertoire.filename);
-
-		let mut rep_reader = csv::Reader::from_reader(rep_file);
-		for result in rep_reader.records() {
-			let record = result
-				.expect("Expected a valid CSV record...");
-
-			let sequence: String = record
-				.deserialize(None)
-				.expect("Could not deserialize CSV record...");
-
-
+		for sequence in sequences {
 			for i in 0..=sequence.len() - SUB_LENGTH {
-				let subsequence = String::from(&sequence[i..i + SUB_LENGTH]);
-				temp.insert(subsequence, 1);
+				temp.lock().unwrap().insert(String::from(&sequence[i..i + SUB_LENGTH]), 1);
 			}
 		}
 
-		print!("Inserted into HashMap@");
-		if repertoire.infected.contains("True") {
-			infected_immune_repertoires.push(temp);
-			println!("{address_infected}");
+		// Check if the repertoire the data came from was from an infected person
+		// Place in appropriate corresponding container
+		if rep.infected.contains("True") {
+			println!("{:>2?} - Inserting into HashMap@{:p}", thread::current().id(), &infected_immune_repertoires);
+			infected_immune_repertoires.lock().unwrap().push(temp.into_inner().unwrap());
 		} else {
-			healthy_immune_repertoires.push(temp);
-			println!("{address_healthy}");
+			println!("{:>2?} - Inserting into HashMap@{:p}", thread::current().id(), &healthy_immune_repertoires);
+			healthy_immune_repertoires.lock().unwrap().push(temp.into_inner().unwrap());
 		}
-	}
+	}).collect();
 
-	println!("Done reading files...");
-
-	println!("Merging HashMaps...");
-
-	for hashmap in &infected_immune_repertoires {
+	for hashmap in infected_immune_repertoires.into_inner().unwrap().iter() {
 		for subsequence in hashmap.keys() {
 			*infected_subsequence_counts.entry(subsequence.to_string()).or_insert(0) += 1;
 		}
 	}
 
-	for hashmap in &healthy_immune_repertoires {
+	for hashmap in healthy_immune_repertoires.into_inner().unwrap().iter() {
 		for subsequence in hashmap.keys() {
 			*healthy_subsequence_counts.entry(subsequence.to_string()).or_insert(0) += 1;
 		}
 	}
 
-	println!("Finished Merging...");
-
-	println!("Displaying results...");
-
 	println!("┏{0:━<13}┳{:━<10}┳{0:━<9}┳{0:━<12}┓", "");
 	println!("┃ {:^11} ┃ {:^8} ┃ {:^7} ┃ {:^10} ┃", "Subsequence", "Infected", "Healthy", "Difference");
 	println!("┣{0:━<13}╋{:━<10}╋{0:━<9}╋{0:━<12}┫", "");
+
 	for (subsequence, occurences) in infected_subsequence_counts {
 		let healthy_occurences: i32 = *healthy_subsequence_counts.get(&subsequence).unwrap_or(&0);
 		if occurences - healthy_occurences >= 5 {
 			println!("┃ {subsequence:<11} ┃ {occurences:>8} ┃ {healthy_occurences:>7} ┃ {:>10} ┃", occurences - healthy_occurences);
 		}
 	}
+
 	println!("┗{0:━<13}┻{:━<10}┻{0:━<9}┻{0:━<12}┛", "");
 }
