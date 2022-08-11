@@ -16,6 +16,7 @@ struct Repertoire {
 
 fn main() {
 	// Vectors containing all immune repertoires
+	// These will be merged in a later stage of the program
 	let infected_immune_repertoires: Mutex<Vec<HashMap<String, i32>>> = Mutex::new(Vec::new());
 	let healthy_immune_repertoires: Mutex<Vec<HashMap<String, i32>>> = Mutex::new(Vec::new());
 
@@ -29,15 +30,19 @@ fn main() {
 	}).collect();
 
 	// Using rayon, iterate over every repertoire and store the results in our Vector of HashMaps
-	let _: Vec<()> = repertoires.par_iter().map(|rep| {
-		println!("{:>2?} - Receiving file {}", thread::current().id(), rep.filename);
+	repertoires.par_iter().map(|rep| {
+		println!("{:0>2?} - Receiving file {}", thread::current().id(), rep.filename);
 
+		// Grab all sequences from the repertoire file
 		let sequences: Vec<String> = csv::Reader::from_reader(File::open(format!("{DATA_PATH}/{}", rep.filename)).unwrap()).records().map(|rec| {
 			rec.unwrap().deserialize::<String>(None).unwrap()
 		}).collect();
 
+		// Temporary HashMap to store every unique subsequence in a repertoire
+		// The value will always be 1 since we are only interested in a subsequence being present
 		let temp: Mutex<HashMap<String, i32>> = Mutex::new(HashMap::new());
 
+		// Insert every subsequence in a String sequence
 		for sequence in sequences {
 			for i in 0..=sequence.len() - SUB_LENGTH {
 				temp.lock().unwrap().insert(String::from(&sequence[i..i + SUB_LENGTH]), 1);
@@ -47,20 +52,24 @@ fn main() {
 		// Check if the repertoire the data came from was from an infected person
 		// Place in appropriate corresponding container
 		if rep.infected.contains("True") {
-			println!("{:>2?} - Inserting into HashMap@{:p}", thread::current().id(), &infected_immune_repertoires);
+			println!("{:0>2?} - Inserting into HashMap@{:p}", thread::current().id(), &infected_immune_repertoires);
 			infected_immune_repertoires.lock().unwrap().push(temp.into_inner().unwrap());
 		} else {
-			println!("{:>2?} - Inserting into HashMap@{:p}", thread::current().id(), &healthy_immune_repertoires);
+			println!("{:0>2?} - Inserting into HashMap@{:p}", thread::current().id(), &healthy_immune_repertoires);
 			healthy_immune_repertoires.lock().unwrap().push(temp.into_inner().unwrap());
 		}
-	}).collect();
+	}).collect::<()>();
 
+	// Merge the infected immune repertoires into a single HashMap
+	// Keys represent the subsequence itself
+	// Values represent how many repertoires the subsequence presents in
 	for hashmap in infected_immune_repertoires.into_inner().unwrap().iter() {
 		for subsequence in hashmap.keys() {
 			*infected_subsequence_counts.entry(subsequence.to_string()).or_insert(0) += 1;
 		}
 	}
 
+	// Same as above for healthy immune repertoires
 	for hashmap in healthy_immune_repertoires.into_inner().unwrap().iter() {
 		for subsequence in hashmap.keys() {
 			*healthy_subsequence_counts.entry(subsequence.to_string()).or_insert(0) += 1;
@@ -71,6 +80,7 @@ fn main() {
 	println!("┃ {:^11} ┃ {:^8} ┃ {:^7} ┃ {:^10} ┃", "Subsequence", "Infected", "Healthy", "Difference");
 	println!("┣{0:━<13}╋{:━<10}╋{0:━<9}╋{0:━<12}┫", "");
 
+	// Only showing results that have 5 more presentations in infected than healthy
 	for (subsequence, occurences) in infected_subsequence_counts {
 		let healthy_occurences: i32 = *healthy_subsequence_counts.get(&subsequence).unwrap_or(&0);
 		if occurences - healthy_occurences >= 5 {
